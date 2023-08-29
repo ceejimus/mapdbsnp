@@ -45,23 +45,64 @@ impl<R: std::io::Read> Iterator for TsvMapRecordReader<R> {
     }
 }
 
-fn parse_tsv_map_record(r: StringRecord) -> anyhow::Result<MapRecord> {
-    let mut parts = r[1].split(':');
-    MapRecord::new(&r[0], parts.next().unwrap(), parts.next().unwrap())
-}
+// TODO: a side-effect of this pattern is that the map is partially created
+// we can handle these errors and delete the result if we want
+pub fn create_map<R: std::io::Read, P: AsRef<Path>>(rdr: R, dst: &P) -> anyhow::Result<()> {
+    // Read TSV records into iter and capture first error
+    // TODO: encapsulate this in something
+    let csv_records = ReaderBuilder::new()
+        .delimiter(b'\t')
+        .has_headers(false)
+        .from_reader(rdr)
+        .into_records();
 
-pub fn create_map<R: std::io::Read, P: AsRef<Path>>(src_tsv: R, dst: &P) -> anyhow::Result<()> {
-    let map_records_reader = TsvMapRecordReader::new(src_tsv)?;
-
-    let num_records = write_map_records(dst, map_records_reader)?;
+    let mut csv_error = Result::Ok(());
+    let records_iter = csv_records.scan(&mut csv_error, |err, record| match record {
+        Ok(record) => Some(record),
+        Err(e) => {
+            **err = Err(e);
+            None
+        }
+    });
+    // Parse TSV StringRecord iter into MapRecord iter
+    // TODO: encapsulate this in something
+    let mut parse_error = Result::Ok(());
+    let map_records =
+        records_iter
+            .map(parse_tsv_map_record)
+            .scan(&mut parse_error, |err, map_record| match map_record {
+                Ok(map_record) => Some(map_record),
+                Err(e) => {
+                    **err = Err(e);
+                    None
+                }
+            });
+    // Write map records to dst
+    let num_records = write_map_records(dst, map_records)?;
+    // Return if read errors
+    csv_error?;
+    // Return if parse errors
+    parse_error?;
+    // Prepend file with number of records
+    // Make this an append and change how suffix is read
     prepend_file(&num_records.to_be_bytes(), dst)?;
 
     Ok(())
 }
 
+fn parse_tsv_map_record(r: StringRecord) -> anyhow::Result<MapRecord> {
+    let mut parts = r[1].split(':');
+    let (chrom, pos) = match (parts.next(), parts.next()) {
+        (Some(chrom), Some(pos)) => Ok((chrom, pos)),
+        (_, _) => Err(anyhow!("Invalid TSV record")),
+    }?;
+    MapRecord::new(&r[0], chrom, pos)
+}
+
+// TODO: move this to binfmt
 fn write_map_records<P: AsRef<Path>>(
     dst: &P,
-    map_records: impl Iterator<Item = anyhow::Result<MapRecord>>,
+    map_records: impl Iterator<Item = MapRecord>,
 ) -> anyhow::Result<u64> {
     // scope of mapfile
     // we want to make sure mapfile is flushed and dropped before we prepend num_records
@@ -73,21 +114,14 @@ fn write_map_records<P: AsRef<Path>>(
     let mut num_records: u64 = 0;
 
     for record in map_records {
-        // let r = r?;
-        // let record = parse_tsv_map_record(r)?;
-        match record {
-            Ok(record) => {
-                write_map_record(&mut map_wtr, &record)?;
-                num_records += 1;
+        write_map_record(&mut map_wtr, &record)?;
+        num_records += 1;
 
-                if last_rsid > record.rsid {
-                    panic!("Make sure source map is sorted.")
-                }
-
-                last_rsid = record.rsid;
-            }
-            Err(e) => return Err(anyhow!(e)),
+        if last_rsid > record.rsid {
+            panic!("Make sure source map is sorted.")
         }
+
+        last_rsid = record.rsid;
     }
     map_wtr.flush()?;
 
