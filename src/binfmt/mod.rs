@@ -1,57 +1,62 @@
+pub(crate) mod maprecord;
 mod readat;
 
+use mktemp::Temp;
+
+pub(crate) use crate::binfmt::maprecord::MapRecord;
+use crate::binfmt::maprecord::RECORD_SIZE;
 pub(crate) use crate::binfmt::readat::ReadAt;
 
-use std::io::Write;
+use std::{
+    fs::{self, File},
+    io::{self, Write},
+    path::Path,
+};
 
 const RECORD_COUNTER_SIZE: u64 = 8;
-const RECORD_SIZE: u64 = 4 + 1 + 4;
-
-pub(crate) struct MapRecord {
-    pub rsid: u32,
-    pub chrom: u8,
-    pub pos: u32,
-}
-
-impl MapRecord {
-    pub fn new(rsid: &str, chrom: &str, pos: &str) -> anyhow::Result<Self> {
-        let rsid = rsid_to_u32(rsid)?;
-        let chrom = chrom_to_u8(chrom)?;
-        let pos = pos.parse::<u32>()?;
-        Ok(Self { rsid, chrom, pos })
-    }
-}
 
 pub(crate) fn get_map_seek_index(record_idx: u64) -> u64 {
     RECORD_COUNTER_SIZE + (record_idx * RECORD_SIZE)
 }
 
 pub(crate) fn write_map_record(wtr: &mut impl Write, r: &MapRecord) -> anyhow::Result<()> {
-    wtr.write_all(&r.rsid.to_be_bytes())?;
-    wtr.write_all(&r.chrom.to_be_bytes())?;
-    wtr.write_all(&r.pos.to_be_bytes())?;
+    let bytes = r.to_bytes()?;
+    wtr.write_all(&bytes)?;
     Ok(())
 }
 
-pub(crate) fn rsid_to_u32(rsid: &str) -> anyhow::Result<u32> {
-    Ok(rsid.replace("rs", "").parse::<u32>()?)
+pub(crate) fn check_record_id_at<R: ReadAt>(
+    map_rdr: &mut R,
+    seek_idx: u64,
+    rsid: u32,
+) -> anyhow::Result<std::cmp::Ordering> {
+    Ok(map_rdr.read_u32_at(seek_idx)?.cmp(&rsid))
 }
 
-pub(crate) fn chrom_to_u8(chrom: &str) -> anyhow::Result<u8> {
-    match chrom {
-        "X" => Ok(23),
-        "Y" => Ok(24),
-        "MT" => Ok(25),
-        _ => Ok(chrom.parse::<u8>()?),
-    }
+pub(crate) fn read_map_record_at<R: ReadAt>(
+    map_rdr: &mut R,
+    seek_idx: u64,
+) -> io::Result<MapRecord> {
+    let mut bytes = [0u8; RECORD_SIZE as usize];
+    map_rdr.fill_buf_at(&mut bytes, seek_idx)?;
+    MapRecord::from_bytes(&bytes)
 }
 
-pub(crate) fn u8_to_chrom(x: u8) -> anyhow::Result<String> {
-    Ok(match x {
-        1..=22 => format!("{x}"),
-        23 => "X".into(),
-        24 => "Y".into(),
-        25 => "MT".into(),
-        _ => panic!("Invalid chrom representation {}", x),
-    })
+pub(crate) fn prepend_file<P: AsRef<Path>>(data: &[u8], file_path: &P) -> anyhow::Result<()> {
+    // Create a temporary file
+    let tmp_path = Temp::new_file()?;
+    // Open temp file for writing
+    let mut tmp = File::create(&tmp_path)?;
+    // Open source file for reading
+    let mut src = File::open(file_path)?;
+    // Write the data to prepend
+    tmp.write_all(data)?;
+    // Copy the rest of the source file
+    io::copy(&mut src, &mut tmp)?;
+    fs::remove_file(file_path)?;
+    fs::rename(&tmp_path, file_path)?;
+    // Stop the temp file being automatically deleted when the variable
+    // is dropped, by releasing it.
+    tmp_path.release();
+    Ok(())
 }

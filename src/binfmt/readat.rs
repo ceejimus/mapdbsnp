@@ -25,6 +25,7 @@ impl<R: Read + Seek> ReadAt for R {
     fn read_u64_at(&mut self, offset: u64) -> io::Result<u64> {
         let mut buf = [0u8; 8];
         self.fill_buf_at(&mut buf, offset)?;
+        println!("[DEBUG ReadAt::read_u64_at() <buf={:?}>", &buf);
         Cursor::new(buf).read_u64::<BigEndian>()
     }
 

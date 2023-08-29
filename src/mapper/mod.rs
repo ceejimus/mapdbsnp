@@ -2,7 +2,11 @@ use std::path::Path;
 
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 
-use crate::binfmt::{get_map_seek_index, rsid_to_u32, u8_to_chrom, ReadAt};
+use crate::binfmt::{
+    check_record_id_at, get_map_seek_index,
+    maprecord::{rsid_to_u32, u8_to_chrom},
+    read_map_record_at, ReadAt,
+};
 
 pub fn map_to_loci<P: AsRef<Path>, R: ReadAt>(
     src_tsv: &P,
@@ -20,6 +24,7 @@ pub fn map_to_loci<P: AsRef<Path>, R: ReadAt>(
         .from_path(out_path)?;
 
     let num_keys_in_map = map_rdr.read_u64_at(0)?;
+    println!("[DEBUG] <num_keys_in_map={}>", num_keys_in_map);
     let max_iters = (num_keys_in_map as f64).log2().ceil() as usize;
 
     // use binary search to search to find records
@@ -40,12 +45,13 @@ pub fn map_to_loci<P: AsRef<Path>, R: ReadAt>(
             let middle = (end + start) / 2;
             let seek_idx = get_map_seek_index(middle);
 
-            match map_rdr.read_u32_at(seek_idx)?.cmp(&rsid) {
+            match check_record_id_at(map_rdr, seek_idx, rsid)? {
                 std::cmp::Ordering::Less => start = middle + 1,
                 std::cmp::Ordering::Greater => end = middle - 1,
                 std::cmp::Ordering::Equal => {
-                    let chrom = u8_to_chrom(map_rdr.read_u8_at(seek_idx + 4)?)?;
-                    let pos = map_rdr.read_u32_at(seek_idx + 4 + 1)?;
+                    let map_record = read_map_record_at(map_rdr, seek_idx)?;
+                    let chrom = u8_to_chrom(map_record.chrom)?;
+                    let pos = map_record.pos;
                     let loci = format!("{}:{}", chrom, pos);
                     let mut new_record = StringRecord::new();
                     new_record.push_field(&loci);

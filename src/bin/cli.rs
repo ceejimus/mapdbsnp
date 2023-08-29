@@ -15,9 +15,9 @@ fn main() -> anyhow::Result<()> {
     let cmd = args[1].clone();
 
     if cmd == "index" {
-        let input_path = Path::new(&args[2]);
+        let input_path = File::open(&args[2])?;
         let mapfile_path = Path::new(&args[3]);
-        create_map(&input_path, &mapfile_path)?;
+        create_map(input_path, &mapfile_path)?;
     } else if cmd == "map" {
         let input_path = Path::new(&args[2]);
         let mut mapfile = File::open(Path::new(&args[3]))?;

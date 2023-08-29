@@ -1,27 +1,68 @@
-use crate::binfmt::write_map_record;
 use crate::binfmt::MapRecord;
+use crate::binfmt::{prepend_file, write_map_record};
 use std::{
-    fs::{self, File},
-    io::{self, BufWriter, Write},
+    fs::File,
+    io::{BufWriter, Write},
     path::Path,
 };
 
+use anyhow::anyhow;
 use csv::{Reader, ReaderBuilder, StringRecord};
-use mktemp::Temp;
 
-pub fn create_map<P: AsRef<Path>>(src_tsv: &P, dst: &P) -> anyhow::Result<()> {
-    let mut rdr = ReaderBuilder::new()
-        .delimiter(b'\t')
-        .has_headers(false)
-        .from_path(src_tsv)?;
+struct TsvMapRecordReader<R> {
+    csv_reader: Reader<R>,
+}
 
-    let num_records = write_map_records(dst, &mut rdr)?;
+impl<R: std::io::Read> TsvMapRecordReader<R> {
+    fn new(rdr: R) -> anyhow::Result<Self> {
+        let csv_reader = ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_reader(rdr);
+
+        Ok(Self { csv_reader })
+    }
+}
+
+impl<R: std::io::Read> Iterator for TsvMapRecordReader<R> {
+    type Item = anyhow::Result<MapRecord>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut next_record = StringRecord::new();
+        match self.csv_reader.read_record(&mut next_record) {
+            Ok(more_records) => {
+                if !more_records {
+                    return None;
+                }
+
+                match parse_tsv_map_record(next_record) {
+                    Ok(map_record) => Some(Ok(map_record)),
+                    Err(e) => Some(Err(anyhow!(e))),
+                }
+            }
+            Err(e) => Some(Err(anyhow!(e))),
+        }
+    }
+}
+
+fn parse_tsv_map_record(r: StringRecord) -> anyhow::Result<MapRecord> {
+    let mut parts = r[1].split(':');
+    MapRecord::new(&r[0], parts.next().unwrap(), parts.next().unwrap())
+}
+
+pub fn create_map<R: std::io::Read, P: AsRef<Path>>(src_tsv: R, dst: &P) -> anyhow::Result<()> {
+    let map_records_reader = TsvMapRecordReader::new(src_tsv)?;
+
+    let num_records = write_map_records(dst, map_records_reader)?;
     prepend_file(&num_records.to_be_bytes(), dst)?;
 
     Ok(())
 }
 
-fn write_map_records<P: AsRef<Path>>(dst: &P, rdr: &mut Reader<File>) -> anyhow::Result<usize> {
+fn write_map_records<P: AsRef<Path>>(
+    dst: &P,
+    map_records: impl Iterator<Item = anyhow::Result<MapRecord>>,
+) -> anyhow::Result<u64> {
     // scope of mapfile
     // we want to make sure mapfile is flushed and dropped before we prepend num_records
     let mut map_wtr = BufWriter::new(File::create(dst)?);
@@ -29,45 +70,26 @@ fn write_map_records<P: AsRef<Path>>(dst: &P, rdr: &mut Reader<File>) -> anyhow:
     // runtime check if file is sorted and panic if not
     let mut last_rsid = 0;
 
-    let mut num_records: usize = 0;
+    let mut num_records: u64 = 0;
 
-    for r in rdr.records() {
-        let r = r?;
-        let record = parse_map_record(r)?;
-        write_map_record(&mut map_wtr, &record)?;
-        num_records += 1;
+    for record in map_records {
+        // let r = r?;
+        // let record = parse_tsv_map_record(r)?;
+        match record {
+            Ok(record) => {
+                write_map_record(&mut map_wtr, &record)?;
+                num_records += 1;
 
-        if last_rsid > record.rsid {
-            panic!("Make sure source map is sorted.")
+                if last_rsid > record.rsid {
+                    panic!("Make sure source map is sorted.")
+                }
+
+                last_rsid = record.rsid;
+            }
+            Err(e) => return Err(anyhow!(e)),
         }
-
-        last_rsid = record.rsid;
     }
     map_wtr.flush()?;
 
     Ok(num_records)
-}
-
-pub(crate) fn parse_map_record(r: StringRecord) -> anyhow::Result<MapRecord> {
-    let mut parts = r[1].split(':');
-    MapRecord::new(&r[0], parts.next().unwrap(), parts.next().unwrap())
-}
-
-fn prepend_file<P: AsRef<Path>>(data: &[u8], file_path: &P) -> anyhow::Result<()> {
-    // Create a temporary file
-    let tmp_path = Temp::new_file()?;
-    // Open temp file for writing
-    let mut tmp = File::create(&tmp_path)?;
-    // Open source file for reading
-    let mut src = File::open(file_path)?;
-    // Write the data to prepend
-    tmp.write_all(data)?;
-    // Copy the rest of the source file
-    io::copy(&mut src, &mut tmp)?;
-    fs::remove_file(file_path)?;
-    fs::rename(&tmp_path, file_path)?;
-    // Stop the temp file being automatically deleted when the variable
-    // is dropped, by releasing it.
-    tmp_path.release();
-    Ok(())
 }
