@@ -24,7 +24,6 @@ pub fn map_to_loci<P: AsRef<Path>, R: ReadAt>(
         .from_path(out_path)?;
 
     let num_keys_in_map = map_rdr.read_u64_at(0)?;
-    println!("[DEBUG] <num_keys_in_map={}>", num_keys_in_map);
     let max_iters = (num_keys_in_map as f64).log2().ceil() as usize;
 
     // use binary search to search to find records
