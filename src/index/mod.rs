@@ -1,88 +1,69 @@
 use crate::binfmt::MapRecord;
 use crate::binfmt::{prepend_file, write_map_record};
-use std::{
-    fs::File,
-    io::{BufWriter, Write},
-    path::Path,
-};
+use std::{fs::File, io::BufWriter, path::Path};
 
 use anyhow::anyhow;
-use csv::{Reader, ReaderBuilder, StringRecord};
+use csv::{ReaderBuilder, StringRecord, StringRecordsIntoIter};
 
 struct TsvMapRecordReader<R> {
-    csv_reader: Reader<R>,
+    inner: StringRecordsIntoIter<R>,
+    error: Option<anyhow::Error>,
 }
 
 impl<R: std::io::Read> TsvMapRecordReader<R> {
-    fn new(rdr: R) -> anyhow::Result<Self> {
-        let csv_reader = ReaderBuilder::new()
+    fn new(rdr: R) -> Self {
+        let inner = ReaderBuilder::new()
             .delimiter(b'\t')
             .has_headers(false)
-            .from_reader(rdr);
+            .from_reader(rdr)
+            .into_records();
 
-        Ok(Self { csv_reader })
+        Self { inner, error: None }
+    }
+
+    fn ok(self) -> anyhow::Result<()> {
+        match self.error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
 impl<R: std::io::Read> Iterator for TsvMapRecordReader<R> {
-    type Item = anyhow::Result<MapRecord>;
+    type Item = MapRecord;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut next_record = StringRecord::new();
-        match self.csv_reader.read_record(&mut next_record) {
-            Ok(more_records) => {
-                if !more_records {
-                    return None;
+        // TODO: can use map?
+        match self.inner.next() {
+            Some(r) => match r {
+                Ok(r) => match parse_tsv_map_record(r) {
+                    Ok(mt) => Some(mt),
+                    Err(e) => {
+                        self.error = Some(anyhow!(e));
+                        None
+                    }
+                },
+                Err(e) => {
+                    self.error = Some(anyhow!(e));
+                    None
                 }
-
-                match parse_tsv_map_record(next_record) {
-                    Ok(map_record) => Some(Ok(map_record)),
-                    Err(e) => Some(Err(anyhow!(e))),
-                }
-            }
-            Err(e) => Some(Err(anyhow!(e))),
+            },
+            None => None,
         }
     }
 }
 
 // TODO: a side-effect of this pattern is that the map is partially created
 // we can handle these errors and delete the result if we want
-pub fn create_map<R: std::io::Read, P: AsRef<Path>>(rdr: R, dst: &P) -> anyhow::Result<()> {
-    // Read TSV records into iter and capture first error
-    // TODO: encapsulate this in something
-    let csv_records = ReaderBuilder::new()
-        .delimiter(b'\t')
-        .has_headers(false)
-        .from_reader(rdr)
-        .into_records();
-
-    let mut csv_error = Result::Ok(());
-    let records_iter = csv_records.scan(&mut csv_error, |err, record| match record {
-        Ok(record) => Some(record),
-        Err(e) => {
-            **err = Err(e);
-            None
-        }
-    });
-    // Parse TSV StringRecord iter into MapRecord iter
-    // TODO: encapsulate this in something
-    let mut parse_error = Result::Ok(());
-    let map_records =
-        records_iter
-            .map(parse_tsv_map_record)
-            .scan(&mut parse_error, |err, map_record| match map_record {
-                Ok(map_record) => Some(map_record),
-                Err(e) => {
-                    **err = Err(e);
-                    None
-                }
-            });
+pub fn create_map<P: AsRef<Path>>(rdr: impl std::io::Read, dst: &P) -> anyhow::Result<()> {
+    // Make TSV reader
+    let mut tsv_reader = TsvMapRecordReader::new(rdr);
+    // Make Map writer
+    let mut map_wtr = BufWriter::new(File::create(dst)?);
     // Write map records to dst
-    let num_records = write_map_records(dst, map_records)?;
-    // Return if read errors
-    csv_error?;
-    // Return if parse errors
-    parse_error?;
+    let num_records = write_map_records(&mut map_wtr, &mut tsv_reader)?;
+    // Check TSV read errors
+    tsv_reader.ok()?;
     // Prepend file with number of records
     // Make this an append and change how suffix is read
     prepend_file(&num_records.to_be_bytes(), dst)?;
@@ -100,13 +81,12 @@ fn parse_tsv_map_record(r: StringRecord) -> anyhow::Result<MapRecord> {
 }
 
 // TODO: move this to binfmt
-fn write_map_records<P: AsRef<Path>>(
-    dst: &P,
+fn write_map_records(
+    wtr: &mut impl std::io::Write,
     map_records: impl Iterator<Item = MapRecord>,
 ) -> anyhow::Result<u64> {
     // scope of mapfile
     // we want to make sure mapfile is flushed and dropped before we prepend num_records
-    let mut map_wtr = BufWriter::new(File::create(dst)?);
 
     // runtime check if file is sorted and panic if not
     let mut last_rsid = 0;
@@ -114,7 +94,7 @@ fn write_map_records<P: AsRef<Path>>(
     let mut num_records: u64 = 0;
 
     for record in map_records {
-        write_map_record(&mut map_wtr, &record)?;
+        write_map_record(wtr, &record)?;
         num_records += 1;
 
         if last_rsid > record.rsid {
@@ -123,7 +103,7 @@ fn write_map_records<P: AsRef<Path>>(
 
         last_rsid = record.rsid;
     }
-    map_wtr.flush()?;
+    wtr.flush()?;
 
     Ok(num_records)
 }

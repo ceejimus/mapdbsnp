@@ -1,31 +1,58 @@
+use clap::Subcommand;
+use clap::{Args, Parser};
 use mapdbsnp::index::create_map;
 use mapdbsnp::mapper::map_to_loci;
-use std::{env, fs::File, path::Path};
+use std::{fs::File, path::PathBuf};
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[clap(subcommand)]
+    command: CliCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum CliCommand {
+    #[clap(name = "index")]
+    /// Creates an dbSNP -> genomic loci map file from TSV
+    Index(IndexCommand),
+    #[clap(name = "map")]
+    /// Maps a source TSV w/ dbSNP IDs to a genomic loci file using mapfile
+    Map(MapCommand),
+}
+
+#[derive(Args, Debug)]
+struct IndexCommand {
+    /// Path to input TSV
+    input_tsv: PathBuf,
+    /// Path to mapfile output
+    mapfile: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct MapCommand {
+    /// Path to source TSV
+    source_tsv: PathBuf,
+    /// Path to mapfile
+    mapfile: PathBuf,
+    /// Path to output TSV
+    output_tsv: PathBuf,
+}
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = env::args().collect();
+    let cli: Cli = Parser::parse();
 
-    if args.len() < 4 {
-        panic!(
-            "Usage: {} ((index mapfile_out) | (map mapfile_in map_from)) outfile",
-            args[0]
-        )
+    match &cli.command {
+        CliCommand::Index(command) => handle_index_command(command),
+        CliCommand::Map(command) => handle_map_command(command),
     }
+}
 
-    let cmd = args[1].clone();
+fn handle_index_command(command: &IndexCommand) -> anyhow::Result<()> {
+    let input_file = File::open(&command.input_tsv)?;
+    create_map(input_file, &command.mapfile)
+}
 
-    if cmd == "index" {
-        let input_path = File::open(&args[2])?;
-        let mapfile_path = Path::new(&args[3]);
-        create_map(input_path, &mapfile_path)?;
-    } else if cmd == "map" {
-        let input_path = Path::new(&args[2]);
-        let mut mapfile = File::open(Path::new(&args[3]))?;
-        let outfile = Path::new(&args[4]);
-        map_to_loci(&input_path, &mut mapfile, &outfile)?;
-    } else {
-        panic!("Unsupported command.")
-    }
-
-    Ok(())
+fn handle_map_command(command: &MapCommand) -> anyhow::Result<()> {
+    let mut mapfile = File::open(&command.mapfile)?;
+    map_to_loci(&command.source_tsv, &mut mapfile, &command.output_tsv)
 }
