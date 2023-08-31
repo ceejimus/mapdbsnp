@@ -1,8 +1,8 @@
 use clap::Subcommand;
 use clap::{Args, Parser};
 use mapdbsnp::index::create_map;
-use mapdbsnp::mapper::map_to_loci;
-use std::{fs::File, path::PathBuf};
+use mapdbsnp::mapper::map_tsv;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -48,11 +48,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn handle_index_command(command: &IndexCommand) -> anyhow::Result<()> {
-    let input_file = File::open(&command.input_tsv)?;
-    create_map(input_file, &command.mapfile)
+    create_map(&command.input_tsv, &command.mapfile)
 }
 
 fn handle_map_command(command: &MapCommand) -> anyhow::Result<()> {
-    let mut mapfile = File::open(&command.mapfile)?;
-    map_to_loci(&command.source_tsv, &mut mapfile, &command.output_tsv)
+    map_tsv(&command.source_tsv, &command.mapfile, &command.output_tsv)
 }

@@ -1,10 +1,8 @@
-use std::{
-    fs::File,
-    io::{self, Read},
-};
+use std::io::{self, Read};
+use std::{fs::File, path::PathBuf};
 
 use mapdbsnp::index::create_map;
-use mapdbsnp::mapper::map_to_loci;
+use mapdbsnp::mapper::map_tsv;
 use mktemp::Temp;
 
 fn cmp_files(path1: &str, path2: &str) -> io::Result<bool> {
@@ -27,9 +25,9 @@ fn test_make_map() {
 
     let out_map_path = dir_path.join("test.map");
     let expected_map_path = "tests/data/test.map.10.map";
-    let src_tsv = File::open("tests/data/test.map.10.tsv").unwrap();
+    let src_tsv = "tests/data/test.map.10.tsv";
 
-    create_map(src_tsv, &out_map_path.as_path()).unwrap();
+    create_map(&PathBuf::from(src_tsv), &out_map_path).unwrap();
     cmp_files(expected_map_path, out_map_path.to_str().unwrap()).unwrap();
 }
 
@@ -42,12 +40,11 @@ fn test_map_markers() {
     let expected_tsv_path = "tests/data/test.out.10.tsv";
     let src_tsv_path = "tests/data/test.in.10.tsv";
     let src_map_path = "tests/data/test.map.10.map";
-    let mut mapfile = File::open(src_map_path).unwrap();
 
-    map_to_loci(
-        &src_tsv_path,
-        &mut mapfile,
-        &out_tsv_path.as_path().to_str().unwrap(),
+    map_tsv(
+        &PathBuf::from(src_tsv_path),
+        &out_tsv_path,
+        &PathBuf::from(src_map_path),
     )
     .unwrap();
     cmp_files(expected_tsv_path, out_tsv_path.to_str().unwrap()).unwrap();

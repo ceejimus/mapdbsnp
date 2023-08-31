@@ -1,62 +1,122 @@
 pub(crate) mod maprecord;
 mod readat;
 
-use mktemp::Temp;
-
 pub(crate) use crate::binfmt::maprecord::MapRecord;
 use crate::binfmt::maprecord::RECORD_SIZE;
 pub(crate) use crate::binfmt::readat::ReadAt;
+use anyhow::anyhow;
 
 use std::{
-    fs::{self, File},
+    fs::File,
     io::{self, Write},
     path::Path,
 };
 
-const RECORD_COUNTER_SIZE: u64 = 8;
-
-pub(crate) fn get_map_seek_index(record_idx: u64) -> u64 {
-    RECORD_COUNTER_SIZE + (record_idx * RECORD_SIZE)
+pub(crate) struct MapReader {
+    mapfile: File,
+    pub num_records: u64,
 }
 
-pub(crate) fn write_map_record(wtr: &mut impl Write, r: &MapRecord) -> anyhow::Result<()> {
-    let bytes = r.to_bytes()?;
-    wtr.write_all(&bytes)?;
-    Ok(())
+impl MapReader {
+    pub(crate) fn new(mapfile_path: impl AsRef<Path>) -> io::Result<Self> {
+        let mut mapfile = File::open(mapfile_path)?;
+        let len = mapfile.metadata()?.len();
+        let num_records = mapfile.read_u64_at(len - 8)?;
+        Ok(Self {
+            mapfile,
+            num_records,
+        })
+    }
+
+    pub(crate) fn find_record(&mut self, key: u32) -> io::Result<Option<MapRecord>> {
+        let max_iters = (self.num_records as f64).log2().ceil() as usize;
+        let mut start = 0;
+        let mut end = self.num_records - 1;
+
+        for _ in 0..max_iters {
+            if end < start {
+                return Ok(None);
+            }
+
+            let middle = (end + start) / 2;
+            let seek_idx = Self::get_map_seek_index(middle);
+
+            match self.check_record_id_at(seek_idx, key)? {
+                std::cmp::Ordering::Less => start = middle + 1,
+                std::cmp::Ordering::Greater => end = middle - 1,
+                std::cmp::Ordering::Equal => return Ok(Some(self.read_map_record_at(seek_idx)?)),
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn get_map_seek_index(key: u64) -> u64 {
+        key * RECORD_SIZE
+    }
+
+    fn check_record_id_at(&mut self, seek_idx: u64, key: u32) -> io::Result<std::cmp::Ordering> {
+        Ok(self.mapfile.read_u32_at(seek_idx)?.cmp(&key))
+    }
+
+    fn read_map_record_at(&mut self, seek_idx: u64) -> io::Result<MapRecord> {
+        let mut bytes = [0u8; RECORD_SIZE as usize];
+        self.mapfile.fill_buf_at(&mut bytes, seek_idx)?;
+        MapRecord::from_bytes(&bytes)
+    }
 }
 
-pub(crate) fn check_record_id_at<R: ReadAt>(
-    map_rdr: &mut R,
-    seek_idx: u64,
-    rsid: u32,
-) -> anyhow::Result<std::cmp::Ordering> {
-    Ok(map_rdr.read_u32_at(seek_idx)?.cmp(&rsid))
+pub(crate) struct MapWriter {
+    mapfile: File,
+    num_records: u64,
 }
 
-pub(crate) fn read_map_record_at<R: ReadAt>(
-    map_rdr: &mut R,
-    seek_idx: u64,
-) -> io::Result<MapRecord> {
-    let mut bytes = [0u8; RECORD_SIZE as usize];
-    map_rdr.fill_buf_at(&mut bytes, seek_idx)?;
-    MapRecord::from_bytes(&bytes)
-}
+impl MapWriter {
+    pub(crate) fn new(mapfile_path: impl AsRef<Path>) -> io::Result<Self> {
+        let mapfile = File::create(mapfile_path)?;
+        let num_records = 0;
+        Ok(Self {
+            mapfile,
+            num_records,
+        })
+    }
 
-pub(crate) fn prepend_file<P: AsRef<Path>>(data: &[u8], file_path: &P) -> anyhow::Result<()> {
-    // Create a temporary file
-    let tmp_path = Temp::new_file()?;
-    // Open temp file for writing
-    let mut tmp = File::create(&tmp_path)?;
-    // Open source file for reading
-    let mut src = File::open(file_path)?;
-    // Write the data to prepend
-    tmp.write_all(data)?;
-    // Copy the rest of the source file
-    io::copy(&mut src, &mut tmp)?;
-    fs::remove_file(file_path)?;
-    fs::rename(&tmp_path, file_path)?;
-    // Stop the temp file being automatically deleted when the variable
-    // is dropped, by releasing it.
-    tmp_path.release();
-    Ok(())
+    pub(crate) fn write_map(
+        &mut self,
+        map_records: impl Iterator<Item = MapRecord>,
+    ) -> anyhow::Result<()> {
+        let mut last_rsid = 0;
+
+        for record in map_records {
+            self.write_map_record(&record)?;
+            self.num_records += 1;
+
+            // runtime check if file is sorted and panic if not
+            if last_rsid > record.rsid {
+                return Err(anyhow!("Make sure source map is sorted."));
+            }
+
+            last_rsid = record.rsid;
+        }
+
+        self.append_n_records()?;
+
+        Ok(())
+    }
+
+    fn write_map_record(&mut self, r: &MapRecord) -> anyhow::Result<()> {
+        let bytes = r.to_bytes()?;
+        self.mapfile.write_all(&bytes)?;
+        Ok(())
+    }
+
+    fn append_n_records(&mut self) -> anyhow::Result<()> {
+        // Flush contents - do we need this?
+        self.mapfile.flush()?;
+        // Append u64 to file
+        let n = self.mapfile.write(&self.num_records.to_be_bytes())?;
+        // safety check
+        assert_eq!(n, 8_usize);
+        Ok(())
+    }
 }

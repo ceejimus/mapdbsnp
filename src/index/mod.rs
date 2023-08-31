@@ -1,6 +1,5 @@
-use crate::binfmt::MapRecord;
-use crate::binfmt::{prepend_file, write_map_record};
-use std::{fs::File, io::BufWriter, path::Path};
+use crate::binfmt::{MapRecord, MapWriter};
+use std::{fs::File, path::Path};
 
 use anyhow::anyhow;
 use csv::{ReaderBuilder, StringRecord, StringRecordsIntoIter};
@@ -55,18 +54,15 @@ impl<R: std::io::Read> Iterator for TsvMapRecordReader<R> {
 
 // TODO: a side-effect of this pattern is that the map is partially created
 // we can handle these errors and delete the result if we want
-pub fn create_map<P: AsRef<Path>>(rdr: impl std::io::Read, dst: &P) -> anyhow::Result<()> {
+pub fn create_map<P: AsRef<Path>>(src_tsv_path: &P, mapfile_path: &P) -> anyhow::Result<()> {
     // Make TSV reader
-    let mut tsv_reader = TsvMapRecordReader::new(rdr);
-    // Make Map writer
-    let mut map_wtr = BufWriter::new(File::create(dst)?);
+    let mut tsv_reader = TsvMapRecordReader::new(File::open(src_tsv_path)?);
+    // Make MapWriter
+    let mut map_wtr = MapWriter::new(mapfile_path)?;
     // Write map records to dst
-    let num_records = write_map_records(&mut map_wtr, &mut tsv_reader)?;
+    map_wtr.write_map(&mut tsv_reader)?;
     // Check TSV read errors
     tsv_reader.ok()?;
-    // Prepend file with number of records
-    // Make this an append and change how suffix is read
-    prepend_file(&num_records.to_be_bytes(), dst)?;
 
     Ok(())
 }
@@ -78,32 +74,4 @@ fn parse_tsv_map_record(r: StringRecord) -> anyhow::Result<MapRecord> {
         (_, _) => Err(anyhow!("Invalid TSV record")),
     }?;
     MapRecord::new(&r[0], chrom, pos)
-}
-
-// TODO: move this to binfmt
-fn write_map_records(
-    wtr: &mut impl std::io::Write,
-    map_records: impl Iterator<Item = MapRecord>,
-) -> anyhow::Result<u64> {
-    // scope of mapfile
-    // we want to make sure mapfile is flushed and dropped before we prepend num_records
-
-    // runtime check if file is sorted and panic if not
-    let mut last_rsid = 0;
-
-    let mut num_records: u64 = 0;
-
-    for record in map_records {
-        write_map_record(wtr, &record)?;
-        num_records += 1;
-
-        if last_rsid > record.rsid {
-            panic!("Make sure source map is sorted.")
-        }
-
-        last_rsid = record.rsid;
-    }
-    wtr.flush()?;
-
-    Ok(num_records)
 }
