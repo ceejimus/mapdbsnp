@@ -8,7 +8,7 @@ use crate::binfmt::{
     MapReader,
 };
 
-pub fn map_tsv<P: AsRef<Path>>(src_tsv: P, dst_tsv: P, map: P) -> anyhow::Result<()> {
+pub fn map_tsv<P: AsRef<Path>>(src_tsv: P, map: P, dst_tsv: P) -> anyhow::Result<()> {
     // make TSV reader
     let mut src_tsv = csv::ReaderBuilder::new()
         .delimiter(b'\t')
