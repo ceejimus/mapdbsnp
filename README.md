@@ -1,3 +1,29 @@
+# mapdbsnp
+
+A Rust CLI tool for mapping dbSNP identifiers to genomic loci using binary index files.
+
+## Usage
+
+Build an index from a TSV file containing dbSNP data:
+```bash
+cargo run -- index input.tsv my.map
+```
+
+Map a source TSV file using the index to add genomic loci:
+```bash
+cargo run -- map source.tsv my.map output.tsv
+```
+
+## Input Format
+
+The input TSV should have dbSNP IDs in the first column and genomic coordinates in the format `chr:pos` in the second column.
+
+## Output Format
+
+The mapper replaces the first column (dbSNP ID) with genomic loci in `chr:pos` format while preserving other columns.
+
+---
+
 # Todo
 
 - create rsid, chrom and pos types and make invalid states unrepresentable
